@@ -236,7 +236,7 @@ std::shared_ptr<std::string> generate_summary_report(const char *event_dir, cons
     dyld_image_info_db *dyld_image_info_reader = dyld_image_info_db_open_or_create(event_dir);
     object_type_db *object_type_reader = object_type_db_open_or_create(event_dir);
 
-    if (!allocation_event_reader || !dyld_image_info_reader || !object_type_reader) {
+    if (!allocation_event_reader || !stack_frames_reader || !dyld_image_info_reader || !object_type_reader) {
         allocation_event_db_close(allocation_event_reader);
         stack_frames_db_close(stack_frames_reader);
         dyld_image_info_db_close(dyld_image_info_reader);

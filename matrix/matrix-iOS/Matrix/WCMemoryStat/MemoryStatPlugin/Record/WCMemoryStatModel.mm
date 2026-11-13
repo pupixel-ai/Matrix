@@ -60,6 +60,9 @@
     }
 
     auto content = generate_summary_report(dataPath.UTF8String, param);
+    if (!content) {
+        return nil;
+    }
     return [NSData dataWithBytes:content->c_str() length:content->size()];
 }
 
