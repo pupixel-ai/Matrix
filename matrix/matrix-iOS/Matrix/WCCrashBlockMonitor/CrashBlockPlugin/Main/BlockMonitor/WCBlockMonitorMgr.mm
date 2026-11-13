@@ -692,7 +692,7 @@ float *kscrash_pointCpuHighThreadArrayCallBack(void) {
 }
 
 - (EDumpType)check {
-    // 1. runloop time out
+    // Snapshot the runloop before collecting CPU stacks.
 
     BOOL tmp_g_bRun = g_bRun;
     struct timeval tmp_g_tvRun = g_tvRun;
@@ -716,6 +716,46 @@ float *kscrash_pointCpuHighThreadArrayCallBack(void) {
 #endif
 
     m_blockDiffTime = 0;
+
+    // Keep power sampling and its window advancing while the main runloop is blocked.
+
+    EDumpType cpuDumpType = EDumpType_Unlag;
+    float appCpuUsage = 0.;
+    if (m_powerConsumeStackCollector == nil) {
+        appCpuUsage = [MatrixDeviceInfo appCpuUsage];
+    } else {
+        appCpuUsage = [m_powerConsumeStackCollector getCPUUsageAndPowerConsumeStack];
+    }
+
+    float deviceCpuUsage = [MatrixDeviceInfo cpuUsage];
+
+    if ([_monitorConfigHandler getShouldPrintCPUUsage] && (appCpuUsage > 40.0f || deviceCpuUsage > 40.0f)) {
+        MatrixInfo(@"AppCpuUsage: %.2f, Device: %.2f", appCpuUsage, deviceCpuUsage * [MatrixDeviceInfo cpuCount]);
+    }
+
+    // 耗电堆栈检测 & CPU 消耗过高检测
+    // 1. 耗电堆栈检测: 在耗电堆栈的内部会去记录时间是否60s，只有累积到60s并且CPU超过阈值才会上报
+    // 2. CPU消耗过高: 这里根据检查的时间间隔就会判断
+    if (m_bTrackCPU) {
+        unsigned long long checkPeriod = [WCBlockMonitorMgr diffTime:&g_lastCheckTime endTime:&tvCur];
+        gettimeofday(&g_lastCheckTime, NULL);
+        if ([m_cpuHandler cultivateCpuUsage:appCpuUsage periodTime:(float)checkPeriod / 1000000]) {
+            MatrixInfo(@"exceed cpu average usage");
+            if (m_powerConsumeStackCollector) {
+                [m_powerConsumeStackCollector makeConclusion];
+            }
+            BM_SAFE_CALL_SELECTOR_NO_RETURN(_delegate, @selector(onBlockMonitorIntervalCPUTooHigh:), onBlockMonitorIntervalCPUTooHigh:self)
+        }
+        if (appCpuUsage > g_CPUUsagePercent) {
+            MatrixInfo(@"check cpu over usage dump %f", appCpuUsage);
+            BM_SAFE_CALL_SELECTOR_NO_RETURN(_delegate, @selector(onBlockMonitorCurrentCPUTooHigh:), onBlockMonitorCurrentCPUTooHigh:self)
+            if ([_monitorConfigHandler getShouldGetCPUHighLog]) {
+                if (m_powerConsumeStackCollector && [m_powerConsumeStackCollector isCPUHighBlock]) {
+                    cpuDumpType = EDumpType_CPUBlock;
+                }
+            }
+        }
+    }
 
     if (tmp_g_bRun && tmp_g_tvRun.tv_sec && tmp_g_tvRun.tv_usec && __timercmp(&tmp_g_tvRun, &tvCur, <) && diff > g_RunLoopTimeOut) {
         m_blockDiffTime = diff;
@@ -751,43 +791,8 @@ float *kscrash_pointCpuHighThreadArrayCallBack(void) {
     }
 #endif
 
-    // 2. cpu usage
-
-    float appCpuUsage = 0.;
-    if (m_powerConsumeStackCollector == nil) {
-        appCpuUsage = [MatrixDeviceInfo appCpuUsage];
-    } else {
-        appCpuUsage = [m_powerConsumeStackCollector getCPUUsageAndPowerConsumeStack];
-    }
-
-    float deviceCpuUsage = [MatrixDeviceInfo cpuUsage];
-
-    if ([_monitorConfigHandler getShouldPrintCPUUsage] && (appCpuUsage > 40.0f || deviceCpuUsage > 40.0f)) {
-        MatrixInfo(@"AppCpuUsage: %.2f, Device: %.2f", appCpuUsage, deviceCpuUsage * [MatrixDeviceInfo cpuCount]);
-    }
-
-    // 耗电堆栈检测 & CPU 消耗过高检测
-    // 1. 耗电堆栈检测: 在耗电堆栈的内部会去记录时间是否60s，只有累积到60s并且CPU超过阈值才会上报
-    // 2. CPU消耗过高: 这里根据检查的时间间隔就会判断
-    if (m_bTrackCPU) {
-        unsigned long long checkPeriod = [WCBlockMonitorMgr diffTime:&g_lastCheckTime endTime:&tvCur];
-        gettimeofday(&g_lastCheckTime, NULL);
-        if ([m_cpuHandler cultivateCpuUsage:appCpuUsage periodTime:(float)checkPeriod / 1000000]) {
-            MatrixInfo(@"exceed cpu average usage");
-            if (m_powerConsumeStackCollector) {
-                [m_powerConsumeStackCollector makeConclusion];
-            }
-            BM_SAFE_CALL_SELECTOR_NO_RETURN(_delegate, @selector(onBlockMonitorIntervalCPUTooHigh:), onBlockMonitorIntervalCPUTooHigh:self)
-        }
-        if (appCpuUsage > g_CPUUsagePercent) {
-            MatrixInfo(@"check cpu over usage dump %f", appCpuUsage);
-            BM_SAFE_CALL_SELECTOR_NO_RETURN(_delegate, @selector(onBlockMonitorCurrentCPUTooHigh:), onBlockMonitorCurrentCPUTooHigh:self)
-            if ([_monitorConfigHandler getShouldGetCPUHighLog]) {
-                if (m_powerConsumeStackCollector && [m_powerConsumeStackCollector isCPUHighBlock]) {
-                    return EDumpType_CPUBlock;
-                }
-            }
-        }
+    if (cpuDumpType != EDumpType_Unlag) {
+        return cpuDumpType;
     }
 
     // 3. print memory
